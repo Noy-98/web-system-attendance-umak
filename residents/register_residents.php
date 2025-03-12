@@ -3,68 +3,133 @@ session_start();
 include "../conn.php";
 
 $pageTitle = "Create Resident";
-$WithEmployeeCSS = False;
+$WithEmployeeCSS = false;
 
+// Firebase Credentials
+define("FIREBASE_API_KEY", "AIzaSyDXuS34OIspDbMFtYuU-DnRhwb3ilLNHts");
+define("FIREBASE_AUTH_URL", "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" . FIREBASE_API_KEY);
+define("FIREBASE_DATABASE_URL", "https://web-attendance-system-c1214-default-rtdb.firebaseio.com/residents.json");
+define("FIREBASE_STORAGE_BUCKET", "web-attendance-system-c1214.appspot.com");
+
+// Handle form submission
 if (isset($_POST["register"])) {
-    $firstname = $_POST["firstname"];
-    $lastname = $_POST["lastname"];
-    $address = $_POST["address"];
+    $firstname = trim($_POST["firstname"]);
+    $lastname = trim($_POST["lastname"]);
+    $address = trim($_POST["address"]);
     $birthdate = $_POST["birthdate"];
-    $contact = $_POST["contact_info"];
-    $gender = $_POST["gender"];
-    $age = $_POST["age"];
-    $filename = $_FILES["photo"]["name"];
-    $email = $_POST["email"];
+    $contact = trim($_POST["contact_info"]);
+    $gender = trim($_POST["gender"]);
+    $age = trim($_POST["age"]);
+    $email = trim($_POST["email"]);
     $password = $_POST["password"];
     
-    // Upload the photo if a file is selected
-    if (!empty($filename)) {
-        move_uploaded_file(
-            $_FILES["photo"]["tmp_name"],
-            "../images/" . $filename
-        );
-    }
+    // Generate Resident ID
+    $resident_id = substr(str_shuffle("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), 0, 3) . random_int(100000000, 999999999);
 
-    $letters = "";
-    $numbers = "";
-    foreach (range("A", "Z") as $char) {
-        $letters .= $char;
-    }
-    for ($i = 0; $i < 10; $i++) {
-        $numbers .= $i;
-    }
-    $resident_id =
-        substr(str_shuffle($letters), 0, 3) .
-        substr(str_shuffle($numbers), 0, 9);
-
-    // Check if all required fields are filled
-    if (!empty($email) && !empty($password) && !empty($firstname) && !empty($lastname) && !empty($age) && !empty($birthdate) && !empty($gender) && !empty($contact)) {
-
-        $sql = "INSERT INTO residents (resident_id, firstname, lastname, address, birthdate, contact_info, gender, age, photo, created_on, email, password) 
-            VALUES ('$resident_id', '$firstname', '$lastname', '$address', '$birthdate', '$contact', '$gender', '$age', '$filename', NOW(), '$email', '$password')";
-
-    if ($conn->query($sql)) {
-        $_SESSION["success"] = "Resident added successfully!";
-        $_SESSION["user_id"] = $conn->insert_id;
-        $_SESSION["firstname"] = $firstname;
-        $_SESSION["lastname"] = $lastname;
-        $_SESSION["address"] = $address;
-        $_SESSION["birthdate"] = $birthdate;
-        $_SESSION["contact"] = $contact;
-        $_SESSION["gender"] = $gender;
-        $_SESSION["age"] = $age;
-        $_SESSION["filename"] = $filename;
-        $_SESSION["email"] = $email;
-        $_SESSION["password"] = $password;
-    } else {
-        $_SESSION["error"] = $conn->error;
-    }
-    } else {
+    // Validate required fields
+    if (empty($email) || empty($password) || empty($firstname) || empty($lastname) || empty($age) || empty($birthdate) || empty($gender) || empty($contact)) {
         $_SESSION["error"] = "All fields are required!";
+        header("Location: register_residents.php");
+        exit();
     }
+
+    // Handle Image Upload (Firebase Storage)
+    $photo_url = "";
+    if (!empty($_FILES["photo"]["name"])) {
+        $temp = $_FILES["photo"]["tmp_name"];
+        $filename = basename($_FILES["photo"]["name"]);
+        $firebase_storage_path = "resident_photos/" . time() . "_" . $filename;
+        
+        // Move file temporarily to server before uploading to Firebase Storage
+        $local_path = "../images/" . $filename;
+        move_uploaded_file($temp, $local_path);
+
+        // Upload to Firebase Storage using cURL
+        $storage_url = "https://firebasestorage.googleapis.com/upload/storage/v1/b/" . FIREBASE_STORAGE_BUCKET . "/o?uploadType=media&name=" . urlencode($firebase_storage_path);
+        $photo_url = "https://firebasestorage.googleapis.com/v0/b/" . FIREBASE_STORAGE_BUCKET . "/o/" . urlencode($firebase_storage_path) . "?alt=media";
+        
+        $ch = curl_init($storage_url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            "Authorization: Bearer " . FIREBASE_API_KEY,
+            "Content-Type: application/octet-stream"
+        ]);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, file_get_contents($local_path));
+        curl_exec($ch);
+        curl_close($ch);
+    }
+
+    // Create user in Firebase Authentication
+    $auth_data = json_encode([
+        "email" => $email,
+        "password" => $password,
+        "returnSecureToken" => true
+    ]);
+
+    $ch = curl_init(FIREBASE_AUTH_URL);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $auth_data);
+    $auth_response = curl_exec($ch);
+    curl_close($ch);
+
+    $auth_result = json_decode($auth_response, true);
+
+    if (isset($auth_result["idToken"])) {
+        $firebase_uid = $auth_result["localId"];
+
+        // Save resident data to Firebase Realtime Database
+        $user_data = json_encode([
+            "resident_id" => $resident_id,
+            "firstname" => $firstname,
+            "lastname" => $lastname,
+            "address" => $address,
+            "birthdate" => $birthdate,
+            "contact_info" => $contact,
+            "gender" => $gender,
+            "age" => $age,
+            "photo" => $photo_url,
+            "email" => $email,
+            "firebase_uid" => $firebase_uid
+        ]);
+
+        $db_ch = curl_init(FIREBASE_DATABASE_URL);
+        curl_setopt($db_ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($db_ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+        curl_setopt($db_ch, CURLOPT_POST, true);
+        curl_setopt($db_ch, CURLOPT_POSTFIELDS, $user_data);
+        curl_exec($db_ch);
+        curl_close($db_ch);
+
+        // Send email verification link
+        $verify_url = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=" . FIREBASE_API_KEY;
+        $verify_data = json_encode([
+            "requestType" => "VERIFY_EMAIL",
+            "idToken" => $auth_result["idToken"]
+        ]);
+
+        $verify_ch = curl_init($verify_url);
+        curl_setopt($verify_ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($verify_ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+        curl_setopt($verify_ch, CURLOPT_POST, true);
+        curl_setopt($verify_ch, CURLOPT_POSTFIELDS, $verify_data);
+        curl_exec($verify_ch);
+        curl_close($verify_ch);
+
+        $_SESSION["success"] = "Resident added successfully! Verification email sent.";
+    } else {
+        $_SESSION["error"] = "Firebase Error: " . json_encode($auth_result["error"]);
+    }
+    
+    header("Location: register_residents.php");
+    exit();
 }
+
 include 'header.php';
 ?>
+
 <style>
 body {
     padding-top: 0;
