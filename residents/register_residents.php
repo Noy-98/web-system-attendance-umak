@@ -35,6 +35,7 @@ if (isset($_POST["register"])) {
 
     // Handle Image Upload (Firebase Storage)
     $photo_url = "";
+    $filename = "";
     if (!empty($_FILES["photo"]["name"])) {
         $temp = $_FILES["photo"]["tmp_name"];
         $filename = basename($_FILES["photo"]["name"]);
@@ -103,7 +104,17 @@ if (isset($_POST["register"])) {
         curl_exec($db_ch);
         curl_close($db_ch);
 
-        // Send email verification link
+        // Insert into MySQL Database
+        $sql = "INSERT INTO residents (resident_id, firstname, lastname, address, birthdate, contact_info, gender, age, photo, created_on, email, password) 
+                VALUES ('$resident_id', '$firstname', '$lastname', '$address', '$birthdate', '$contact', '$gender', '$age', '$filename', NOW(), '$email', '$password')";
+        
+        if ($conn->query($sql)) {
+            $_SESSION["success"] = "Resident added successfully! Verification email sent.";
+        } else {
+            $_SESSION["error"] = "MySQL Error: " . $conn->error;
+        }
+
+// Send email verification link
         $verify_url = "https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=" . FIREBASE_API_KEY;
         $verify_data = json_encode([
             "requestType" => "VERIFY_EMAIL",
